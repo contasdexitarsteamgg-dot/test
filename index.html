@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mercari Sniper — Dashboard</title>
+<style>
+/* ── Reset & base ── */
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f0f13;color:#e0e0e0;font-family:'Inter',system-ui,sans-serif;min-height:100vh}
+a{color:#6c63ff;text-decoration:none}
+
+/* ── Layout ── */
+.sidebar{position:fixed;top:0;left:0;width:220px;height:100vh;background:#1a1a24;border-right:1px solid #2a2a3a;display:flex;flex-direction:column;padding:24px 16px;z-index:100}
+.main{margin-left:220px;padding:32px}
+
+/* ── Sidebar ── */
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:36px;padding:0 8px}
+.brand-icon{font-size:1.6rem}
+.brand-name{font-size:1.1rem;font-weight:700;color:#fff}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;font-size:0.9rem;color:#888;transition:all .2s;margin-bottom:4px;border:none;background:none;width:100%;text-align:left}
+.nav-item:hover{background:#22223a;color:#e0e0e0}
+.nav-item.active{background:#2a2a4a;color:#6c63ff}
+.nav-item .icon{font-size:1.1rem;width:20px;text-align:center}
+.sidebar-footer{margin-top:auto;padding-top:16px;border-top:1px solid #2a2a3a}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.dot-running{background:#22c55e;box-shadow:0 0 6px #22c55e}
+.dot-paused{background:#f59e0b}
+.dot-stopped{background:#ef4444}
+.dot-error{background:#ef4444;box-shadow:0 0 6px #ef4444}
+
+/* ── Tabs ── */
+.tab{display:none}
+.tab.active{display:block}
+
+/* ── Cards / Stats ── */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:28px}
+.stat-card{background:#1a1a24;border:1px solid #2a2a3a;border-radius:12px;padding:20px 22px}
+.stat-label{font-size:0.75rem;color:#555;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.stat-value{font-size:1.8rem;font-weight:700;color:#fff}
+.stat-sub{font-size:0.75rem;color:#555;margin-top:4px}
+
+/* ── Section header ── */
+.section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.section-title{font-size:1rem;font-weight:600;color:#fff}
+
+/* ── Controls panel ── */
+.controls-panel{background:#1a1a24;border:1px solid #2a2a3a;border-radius:12px;padding:24px;margin-bottom:24px}
+.controls-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.btn{padding:10px 20px;border-radius:8px;border:none;font-size:0.9rem;font-weight:600;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:6px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-green{background:#166534;color:#4ade80}
+.btn-green:hover:not(:disabled){background:#15803d}
+.btn-red{background:#7f1d1d;color:#f87171}
+.btn-red:hover:not(:disabled){background:#991b1b}
+.btn-yellow{background:#78350f;color:#fbbf24}
+.btn-yellow:hover:not(:disabled){background:#92400e}
+.btn-blue{background:#1e3a5f;color:#60a5fa}
+.btn-blue:hover:not(:disabled){background:#1d4ed8}
+.btn-ghost{background:transparent;color:#888;border:1px solid #2a2a3a}
+.btn-ghost:hover{background:#22223a;color:#e0e0e0}
+
+.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.setting-group label{display:block;font-size:0.8rem;color:#888;margin-bottom:6px}
+.setting-group input{width:100%;padding:10px 14px;background:#0f0f13;border:1px solid #2a2a3a;border-radius:8px;color:#e0e0e0;font-size:0.9rem;outline:none;transition:border-color .2s}
+.setting-group input:focus{border-color:#6c63ff}
+.save-btn{margin-top:12px}
+
+/* ── Listings ── */
+.search-bar{display:flex;gap:10px;margin-bottom:16px}
+.search-bar input{flex:1;padding:10px 14px;background:#1a1a24;border:1px solid #2a2a3a;border-radius:8px;color:#e0e0e0;font-size:0.9rem;outline:none}
+.search-bar input:focus{border-color:#6c63ff}
+
+.listings-table{width:100%;border-collapse:collapse}
+.listings-table th{text-align:left;padding:10px 14px;font-size:0.75rem;color:#555;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid #2a2a3a}
+.listings-table td{padding:12px 14px;border-bottom:1px solid #1e1e2a;vertical-align:middle}
+.listings-table tr:hover td{background:#1a1a24}
+
+.listing-thumb{width:48px;height:48px;object-fit:cover;border-radius:6px;background:#2a2a3a}
+.listing-thumb-placeholder{width:48px;height:48px;background:#2a2a3a;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:1.4rem}
+.listing-name{font-weight:500;color:#e0e0e0;font-size:0.9rem;max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.listing-seller{font-size:0.75rem;color:#555;margin-top:2px}
+.listing-price{font-weight:700;color:#4ade80;white-space:nowrap}
+.listing-condition{font-size:0.75rem;color:#888;background:#1e2a1e;padding:2px 8px;border-radius:4px;white-space:nowrap}
+.listing-time{font-size:0.75rem;color:#555;white-space:nowrap}
+.view-btn{padding:6px 12px;background:#2a2a4a;border:none;border-radius:6px;color:#6c63ff;font-size:0.8rem;cursor:pointer;transition:background .2s}
+.view-btn:hover{background:#3a3a5a}
+
+.pagination{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:20px}
+.page-btn{padding:8px 14px;background:#1a1a24;border:1px solid #2a2a3a;border-radius:6px;color:#888;cursor:pointer;font-size:0.85rem;transition:all .2s}
+.page-btn:hover{border-color:#6c63ff;color:#6c63ff}
+.page-btn.current{background:#2a2a4a;border-color:#6c63ff;color:#6c63ff}
+.page-info{font-size:0.8rem;color:#555}
+
+/* ── Logs ── */
+.log-box{background:#0a0a0f;border:1px solid #1e1e2a;border-radius:10px;padding:16px;height:500px;overflow-y:auto;font-family:'JetBrains Mono','Fira Code',monospace;font-size:0.78rem;line-height:1.6}
+.log-line{padding:1px 0}
+.log-line.INFO{color:#888}
+.log-line.WARNING{color:#f59e0b}
+.log-line.ERROR{color:#ef4444}
+.log-line.CRITICAL{color:#ff0000;font-weight:bold}
+.log-line .highlight{color:#6c63ff}
+.log-line .new-item{color:#4ade80}
+
+/* ── Empty state ── */
+.empty{text-align:center;padding:60px 20px;color:#444}
+.empty-icon{font-size:3rem;margin-bottom:12px}
+.empty-text{font-size:0.9rem}
+
+/* ── Toast ── */
+#toast{position:fixed;bottom:24px;right:24px;background:#1a1a24;border:1px solid #2a2a3a;border-radius:10px;padding:14px 20px;font-size:0.85rem;color:#e0e0e0;opacity:0;transform:translateY(10px);transition:all .3s;pointer-events:none;z-index:999}
+#toast.show{opacity:1;transform:translateY(0)}
+#toast.success{border-color:#22c55e;color:#4ade80}
+#toast.error{border-color:#ef4444;color:#f87171}
+
+/* ── Page header ── */
+.page-header{margin-bottom:28px}
+.page-header h2{font-size:1.5rem;font-weight:700;color:#fff}
+.page-header p{font-size:0.85rem;color:#555;margin-top:4px}
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+  <div class="brand">
+    <span class="brand-icon">🎯</span>
+    <span class="brand-name">Sniper</span>
+  </div>
+  <button class="nav-item active" onclick="showTab('dashboard', this)"><span class="icon">📊</span> Dashboard</button>
+  <button class="nav-item" onclick="showTab('listings', this)"><span class="icon">🛍️</span> Listings</button>
+  <button class="nav-item" onclick="showTab('controls', this)"><span class="icon">⚙️</span> Controls</button>
+  <button class="nav-item" onclick="showTab('logs', this)"><span class="icon">📋</span> Logs</button>
+  <div class="sidebar-footer">
+    <div style="font-size:0.8rem;color:#555;padding:0 4px;margin-bottom:10px">
+      <span class="status-dot dot-stopped" id="sidebar-dot"></span>
+      <span id="sidebar-status">Stopped</span>
+    </div>
+    <a href="/logout" class="nav-item btn-ghost" style="display:flex;justify-content:center"><span class="icon">🚪</span> Logout</a>
+  </div>
+</div>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- ── Dashboard tab ── -->
+  <div class="tab active" id="tab-dashboard">
+    <div class="page-header">
+      <h2>Dashboard</h2>
+      <p>Live overview of the sniper bot</p>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Status</div>
+        <div class="stat-value" id="stat-status">—</div>
+        <div class="stat-sub" id="stat-keyword">keyword: —</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Listings Sent</div>
+        <div class="stat-value" id="stat-sent">0</div>
+        <div class="stat-sub">to Telegram</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Polls</div>
+        <div class="stat-value" id="stat-polls">0</div>
+        <div class="stat-sub" id="stat-last-poll">last: —</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Interval</div>
+        <div class="stat-value" id="stat-interval">—</div>
+        <div class="stat-sub">seconds</div>
+      </div>
+    </div>
+
+    <!-- Quick controls -->
+    <div class="controls-panel">
+      <div class="section-header"><span class="section-title">Quick Controls</span></div>
+      <div class="controls-row">
+        <button class="btn btn-green" id="btn-start" onclick="control('start')">▶ Start</button>
+        <button class="btn btn-red"   id="btn-stop"  onclick="control('stop')">■ Stop</button>
+        <button class="btn btn-yellow" id="btn-pause" onclick="control('pause')">⏸ Pause</button>
+        <button class="btn btn-blue"  id="btn-resume" onclick="control('resume')">▶ Resume</button>
+      </div>
+    </div>
+
+    <!-- Recent listings preview -->
+    <div class="section-header">
+      <span class="section-title">Recent Listings</span>
+      <button class="btn btn-ghost" onclick="showTab('listings', document.querySelector('[onclick*=listings]'))">View all →</button>
+    </div>
+    <div id="recent-listings-body"></div>
+  </div>
+
+  <!-- ── Listings tab ── -->
+  <div class="tab" id="tab-listings">
+    <div class="page-header">
+      <h2>Listings</h2>
+      <p>All discovered listings — newest first</p>
+    </div>
+    <div class="search-bar">
+      <input type="text" id="listing-search" placeholder="Search listings..." oninput="searchListings()">
+    </div>
+    <div id="listings-body"></div>
+    <div class="pagination" id="pagination"></div>
+  </div>
+
+  <!-- ── Controls tab ── -->
+  <div class="tab" id="tab-controls">
+    <div class="page-header">
+      <h2>Controls</h2>
+      <p>Start, stop, and configure the bot</p>
+    </div>
+    <div class="controls-panel">
+      <div class="section-header"><span class="section-title">Bot State</span></div>
+      <div class="controls-row">
+        <button class="btn btn-green"  onclick="control('start')">▶ Start</button>
+        <button class="btn btn-red"    onclick="control('stop')">■ Stop</button>
+        <button class="btn btn-yellow" onclick="control('pause')">⏸ Pause</button>
+        <button class="btn btn-blue"   onclick="control('resume')">▶ Resume</button>
+      </div>
+
+      <hr style="border:none;border-top:1px solid #2a2a3a;margin:20px 0">
+
+      <div class="section-header"><span class="section-title">Settings</span></div>
+      <div class="settings-grid">
+        <div class="setting-group">
+          <label>Search Keyword</label>
+          <input type="text" id="input-keyword" placeholder="e.g. UNDERCOVER">
+        </div>
+        <div class="setting-group">
+          <label>Poll Interval (seconds, min 5)</label>
+          <input type="number" id="input-interval" min="5" max="120" placeholder="8">
+        </div>
+      </div>
+      <div class="controls-row save-btn">
+        <button class="btn btn-blue" onclick="saveSettings()">💾 Save Settings</button>
+      </div>
+
+      <hr style="border:none;border-top:1px solid #2a2a3a;margin:20px 0">
+
+      <div class="section-header"><span class="section-title">Current Config</span></div>
+      <div id="config-display" style="font-size:0.85rem;color:#888;line-height:2"></div>
+    </div>
+  </div>
+
+  <!-- ── Logs tab ── -->
+  <div class="tab" id="tab-logs">
+    <div class="page-header">
+      <h2>Logs</h2>
+      <p>Last 200 lines — auto-refreshes every 5s</p>
+    </div>
+    <div style="display:flex;gap:10px;margin-bottom:12px">
+      <button class="btn btn-ghost" onclick="loadLogs()">🔄 Refresh</button>
+      <button class="btn btn-ghost" id="autoscroll-btn" onclick="toggleAutoscroll()">📌 Autoscroll: ON</button>
+    </div>
+    <div class="log-box" id="log-box"></div>
+  </div>
+
+</div><!-- /main -->
+
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+let currentPage = 1;
+let currentSearch = '';
+let autoscroll = true;
+let logsInterval = null;
+
+// ── Tab switching ──────────────────────────────────────────────────────────────
+function showTab(name, btn) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (btn) btn.classList.add('active');
+  if (name === 'listings') loadListings();
+  if (name === 'logs') { loadLogs(); startLogsRefresh(); }
+  else stopLogsRefresh();
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────────
+function toast(msg, type='') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show ' + type;
+  setTimeout(() => el.className = '', 2500);
+}
+
+// ── State polling ──────────────────────────────────────────────────────────────
+async function refreshState() {
+  const r = await fetch('/api/state');
+  const s = await r.json();
+
+  const status = s.status || 'stopped';
+  document.getElementById('stat-status').textContent = status.charAt(0).toUpperCase() + status.slice(1);
+  document.getElementById('stat-keyword').textContent = 'keyword: ' + (s.keyword || '—');
+  document.getElementById('stat-sent').textContent   = s.total_sent || 0;
+  document.getElementById('stat-polls').textContent  = s.total_polls || 0;
+  document.getElementById('stat-interval').textContent = s.poll_interval || '—';
+
+  const lastPoll = s.last_poll ? new Date(s.last_poll + 'Z').toLocaleTimeString() : '—';
+  document.getElementById('stat-last-poll').textContent = 'last: ' + lastPoll;
+
+  // Sidebar dot
+  const dot = document.getElementById('sidebar-dot');
+  const sideStatus = document.getElementById('sidebar-status');
+  dot.className = 'status-dot dot-' + status;
+  sideStatus.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+
+  // Config display
+  document.getElementById('config-display').innerHTML =
+    `Keyword: <strong style="color:#e0e0e0">${s.keyword}</strong> &nbsp;|&nbsp;
+     Interval: <strong style="color:#e0e0e0">${s.poll_interval}s</strong> &nbsp;|&nbsp;
+     Started: <strong style="color:#e0e0e0">${s.started_at ? new Date(s.started_at+'Z').toLocaleString() : 'not yet'}</strong>
+     ${s.last_error ? `<br>⚠️ Last error: <span style="color:#f87171">${s.last_error}</span>` : ''}`;
+
+  // Pre-fill inputs
+  if (!document.getElementById('input-keyword').value)
+    document.getElementById('input-keyword').value = s.keyword || '';
+  if (!document.getElementById('input-interval').value)
+    document.getElementById('input-interval').value = s.poll_interval || 8;
+
+  // Recent listings on dashboard
+  loadRecentListings();
+}
+
+// ── Control ────────────────────────────────────────────────────────────────────
+async function control(action) {
+  const r = await fetch('/api/control', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({action})
+  });
+  const d = await r.json();
+  if (d.ok) toast('✓ ' + action, 'success');
+  else toast('✗ ' + (d.error || action), 'error');
+  setTimeout(refreshState, 600);
+}
+
+async function saveSettings() {
+  const kw = document.getElementById('input-keyword').value.trim();
+  const iv = document.getElementById('input-interval').value;
+  if (kw) {
+    const r = await fetch('/api/control', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({action:'set_keyword', keyword: kw})
+    });
+    const d = await r.json();
+    if (!d.ok) { toast('Keyword error: ' + d.error, 'error'); return; }
+  }
+  if (iv) {
+    const r = await fetch('/api/control', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({action:'set_interval', interval: parseInt(iv)})
+    });
+    const d = await r.json();
+    if (!d.ok) { toast('Interval error: ' + d.error, 'error'); return; }
+  }
+  toast('✓ Settings saved', 'success');
+  setTimeout(refreshState, 400);
+}
+
+// ── Listings ───────────────────────────────────────────────────────────────────
+function searchListings() {
+  currentSearch = document.getElementById('listing-search').value;
+  currentPage = 1;
+  loadListings();
+}
+
+async function loadListings(page) {
+  if (page) currentPage = page;
+  const url = `/api/listings?page=${currentPage}&per_page=30&q=${encodeURIComponent(currentSearch)}`;
+  const r = await fetch(url);
+  const d = await r.json();
+  renderListings(d, 'listings-body', 'pagination');
+}
+
+async function loadRecentListings() {
+  const r = await fetch('/api/listings?page=1&per_page=5');
+  const d = await r.json();
+  const el = document.getElementById('recent-listings-body');
+  if (!d.items || !d.items.length) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">No listings yet — start the bot to begin sniping</div></div>';
+    return;
+  }
+  el.innerHTML = buildTable(d.items, false);
+}
+
+function buildTable(items, showPagination) {
+  let html = `<table class="listings-table">
+    <thead><tr>
+      <th>Item</th><th>Name</th><th>Price</th><th>Condition</th><th>Found</th><th></th>
+    </tr></thead><tbody>`;
+  for (const i of items) {
+    const time = i.found_at ? new Date(i.found_at + 'Z').toLocaleString() : '—';
+    const thumb = i.thumbnail
+      ? `<img src="${i.thumbnail}" class="listing-thumb" onerror="this.style.display='none'">`
+      : `<div class="listing-thumb-placeholder">👕</div>`;
+    html += `<tr>
+      <td>${thumb}</td>
+      <td><div class="listing-name" title="${esc(i.name)}">${esc(i.name)}</div>
+          ${i.seller ? `<div class="listing-seller">by ${esc(i.seller)}</div>` : ''}</td>
+      <td><span class="listing-price">${esc(i.price_str)}</span></td>
+      <td>${i.condition ? `<span class="listing-condition">${esc(i.condition)}</span>` : '<span style="color:#444">—</span>'}</td>
+      <td><span class="listing-time">${time}</span></td>
+      <td><a href="${i.url}" target="_blank"><button class="view-btn">View ↗</button></a></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+function renderListings(d, bodyId, paginationId) {
+  const el = document.getElementById(bodyId);
+  if (!d.items || !d.items.length) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">🛍️</div><div class="empty-text">No listings found</div></div>';
+    document.getElementById(paginationId).innerHTML = '';
+    return;
+  }
+  el.innerHTML = buildTable(d.items);
+
+  // Pagination
+  const pg = document.getElementById(paginationId);
+  let pgHtml = `<span class="page-info">${d.total} total</span>`;
+  if (d.page > 1) pgHtml += `<button class="page-btn" onclick="loadListings(${d.page-1})">‹ Prev</button>`;
+  for (let p = Math.max(1, d.page-2); p <= Math.min(d.pages, d.page+2); p++) {
+    pgHtml += `<button class="page-btn ${p===d.page?'current':''}" onclick="loadListings(${p})">${p}</button>`;
+  }
+  if (d.page < d.pages) pgHtml += `<button class="page-btn" onclick="loadListings(${d.page+1})">Next ›</button>`;
+  pg.innerHTML = pgHtml;
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Logs ───────────────────────────────────────────────────────────────────────
+async function loadLogs() {
+  const r = await fetch('/api/logs');
+  const d = await r.json();
+  const box = document.getElementById('log-box');
+  box.innerHTML = d.lines.map(l => {
+    let cls = 'INFO';
+    if (l.includes('| WARNING |')) cls = 'WARNING';
+    else if (l.includes('| ERROR |') || l.includes('| CRITICAL |')) cls = 'ERROR';
+    let colored = esc(l);
+    if (l.includes('NEW:') || l.includes('✓')) colored = `<span class="new-item">${colored}</span>`;
+    if (l.includes('http')) colored = colored.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" style="color:#6c63ff">$1</a>');
+    return `<div class="log-line ${cls}">${colored}</div>`;
+  }).join('');
+  if (autoscroll) box.scrollTop = box.scrollHeight;
+}
+
+function startLogsRefresh() {
+  if (!logsInterval) logsInterval = setInterval(loadLogs, 5000);
+}
+function stopLogsRefresh() {
+  if (logsInterval) { clearInterval(logsInterval); logsInterval = null; }
+}
+function toggleAutoscroll() {
+  autoscroll = !autoscroll;
+  document.getElementById('autoscroll-btn').textContent = '📌 Autoscroll: ' + (autoscroll ? 'ON' : 'OFF');
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+refreshState();
+setInterval(refreshState, 4000);
+</script>
+</body>
+</html>
