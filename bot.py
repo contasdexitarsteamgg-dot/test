@@ -8,13 +8,16 @@ Runs as a background task alongside the Flask web dashboard.
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 import aiohttp
+import requests
 from aiohttp import ClientTimeout
+from bs4 import BeautifulSoup
 from telegram import Bot
 from telegram.error import TelegramError
 
@@ -92,22 +95,44 @@ class ListingsStore:
         return self.items
 
 
-# ── Mercari API client ─────────────────────────────────────────────────────────
+# ── Mercari web scraper ────────────────────────────────────────────────────────
 class MercariClient:
-    URL = "https://api.mercari.jp/v2/entities:search"
+    """
+    Scrapes jp.mercari.com search results instead of calling the private API
+    (which requires authentication and returns 401 for unauthenticated requests).
+
+    Strategy
+    --------
+    Mercari's search page is a Next.js SSR app.  The full page data is embedded
+    in a <script id="__NEXT_DATA__"> JSON blob — we parse that first because it
+    is structured and reliable.  If that blob is absent (e.g. a JS-only render
+    fallback), we fall back to scraping <li> / <article> elements with
+    BeautifulSoup.
+    """
+
+    SEARCH_URL = (
+        "https://jp.mercari.com/search"
+        "?keyword={keyword}"
+        "&sort_order=created_time"
+        "&order=desc"
+        "&status=on_sale"
+    )
     HEADERS = {
-        "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept":          "application/json, text/plain, */*",
+        "User-Agent":      (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.8",
-        "Content-Type":    "application/json",
-        "X-Platform":      "web",
-        "Origin":          "https://jp.mercari.com",
+        "Accept-Encoding": "gzip, deflate, br",
         "Referer":         "https://jp.mercari.com/",
-        "DPoP":            "v=1",
+        "DNT":             "1",
     }
 
     def __init__(self, session: aiohttp.ClientSession):
+        # aiohttp session kept for interface compatibility; HTTP is done via
+        # requests so BeautifulSoup can work synchronously.
         self.session = session
 
     def _next_proxy(self) -> Optional[str]:
@@ -118,72 +143,275 @@ class MercariClient:
         CONFIG["proxy_index"] = (CONFIG["proxy_index"] + 1) % len(PROXY_LIST)
         return proxy
 
-    async def fetch(self, keyword: str, page_size: int) -> List[Dict]:
-        payload = {
-            "pageSize": page_size,
-            "pageToken": "",
-            "searchSessionId": "",
-            "indexRouting": "INDEX_ROUTING_UNSPECIFIED",
-            "searchCondition": {
-                "keyword":        keyword,
-                "excludeKeyword": "",
-                "sort":           "SORT_CREATED_TIME",
-                "order":          "ORDER_DESC",
-                "status":         ["STATUS_ON_SALE"],
-                "itemTypes":      [],
-                "sizeGroupIds":   [],
-                "categoryIds":    [],
-            },
-            "defaultDatasets": ["DATASET_TYPE_MERCARI", "DATASET_TYPE_BEYOND"],
-        }
+    def _proxy_dict(self, proxy_url: Optional[str]) -> Optional[dict]:
+        """Convert a proxy URL string to the dict format requests expects."""
+        if not proxy_url:
+            return None
+        return {"http": proxy_url, "https": proxy_url}
 
-        # Each attempt uses the next proxy in the rotation so that a dead proxy
-        # is skipped automatically on the following retry.
-        for attempt in range(1, CONFIG["max_retries"] + len(PROXY_LIST) + 1):
+    def _fetch_html(self, keyword: str) -> Optional[str]:
+        """
+        Synchronous HTML fetch with proxy rotation and retry logic.
+        Returns the raw HTML string on success, or None after all retries fail.
+        """
+        url = self.SEARCH_URL.format(keyword=requests.utils.quote(keyword))
+        max_attempts = CONFIG["max_retries"] + max(len(PROXY_LIST), 1)
+
+        for attempt in range(1, max_attempts + 1):
             proxy = self._next_proxy()
-            log.debug(f"Attempt {attempt} via proxy {proxy}")
+            proxies = self._proxy_dict(proxy)
+            log.debug(f"Scrape attempt {attempt} via proxy {proxy}")
             try:
-                async with self.session.post(
-                    self.URL,
-                    json=payload,
+                resp = requests.get(
+                    url,
                     headers=self.HEADERS,
-                    proxy=proxy,
-                    timeout=ClientTimeout(total=CONFIG["timeout"]),
-                ) as r:
-                    if r.status == 200:
-                        data = await r.json(content_type=None)
-                        raw = data.get("items") or data.get("result", {}).get("items", [])
-                        return self._parse(raw)
-                    elif r.status == 429:
-                        log.warning(f"429 rate-limit via {proxy}, backing off")
-                        await asyncio.sleep(CONFIG["retry_delay"] * attempt)
-                    else:
-                        body = await r.text()
-                        log.warning(f"HTTP {r.status} via {proxy}: {body[:200]}")
-                        await asyncio.sleep(CONFIG["retry_delay"])
-            except (aiohttp.ClientProxyConnectionError,
-                    aiohttp.ClientConnectorError,
-                    asyncio.TimeoutError) as e:
-                log.warning(f"Proxy {proxy} unreachable (attempt {attempt}): {e}")
-                await asyncio.sleep(CONFIG["retry_delay"])
+                    proxies=proxies,
+                    timeout=CONFIG["timeout"],
+                    allow_redirects=True,
+                )
+                if resp.status_code == 200:
+                    log.debug(f"Got {len(resp.text)} bytes from {proxy}")
+                    return resp.text
+                elif resp.status_code == 429:
+                    log.warning(f"429 rate-limit via {proxy}, backing off")
+                    time.sleep(CONFIG["retry_delay"] * attempt)
+                else:
+                    log.warning(
+                        f"HTTP {resp.status_code} via {proxy}: "
+                        f"{resp.text[:200]}"
+                    )
+                    time.sleep(CONFIG["retry_delay"])
+            except requests.exceptions.ProxyError as e:
+                log.warning(f"Proxy {proxy} error (attempt {attempt}): {e}")
+                time.sleep(CONFIG["retry_delay"])
+            except requests.exceptions.Timeout:
+                log.warning(f"Timeout via {proxy} (attempt {attempt})")
+                time.sleep(CONFIG["retry_delay"])
             except Exception as e:
                 log.warning(f"Request error attempt {attempt} via {proxy}: {e}")
-                await asyncio.sleep(CONFIG["retry_delay"])
+                time.sleep(CONFIG["retry_delay"])
+
+        log.error("All scrape attempts exhausted — returning empty list")
+        return None
+
+    async def fetch(self, keyword: str, page_size: int) -> List[Dict]:
+        """
+        Async entry point called by the bot loop.
+        Runs the blocking HTTP + parse work in a thread-pool executor so the
+        event loop is not blocked.
+        """
+        loop = asyncio.get_event_loop()
+        html = await loop.run_in_executor(None, self._fetch_html, keyword)
+        if not html:
+            return []
+        items = await loop.run_in_executor(None, self._parse_html, html)
+        return items[:page_size]
+
+    # ── Parsers ───────────────────────────────────────────────────────────────
+
+    def _parse_html(self, html: str) -> List[Dict]:
+        """
+        Try the fast __NEXT_DATA__ path first; fall back to HTML scraping.
+        """
+        items = self._parse_next_data(html)
+        if items:
+            log.debug(f"Parsed {len(items)} items from __NEXT_DATA__")
+            return items
+
+        log.debug("__NEXT_DATA__ parse yielded nothing — trying HTML scrape")
+        items = self._parse_html_tags(html)
+        log.debug(f"HTML scrape yielded {len(items)} items")
+        return items
+
+    def _parse_next_data(self, html: str) -> List[Dict]:
+        """
+        Mercari's Next.js pages embed all SSR data in:
+            <script id="__NEXT_DATA__" type="application/json">{ … }</script>
+        We extract that blob and walk the known key paths to find item lists.
+        """
+        try:
+            soup = BeautifulSoup(html, "lxml")
+            tag = soup.find("script", {"id": "__NEXT_DATA__"})
+            if not tag or not tag.string:
+                return []
+
+            data = json.loads(tag.string)
+
+            # Walk common paths where Mercari stores search results
+            candidates: List[dict] = []
+
+            # Path 1: props.pageProps.initialState.search.items
+            try:
+                candidates = (
+                    data["props"]["pageProps"]["initialState"]["search"]["items"]
+                )
+            except (KeyError, TypeError):
+                pass
+
+            # Path 2: props.pageProps.items
+            if not candidates:
+                try:
+                    candidates = data["props"]["pageProps"]["items"]
+                except (KeyError, TypeError):
+                    pass
+
+            # Path 3: props.pageProps.searchResult.items
+            if not candidates:
+                try:
+                    candidates = (
+                        data["props"]["pageProps"]["searchResult"]["items"]
+                    )
+                except (KeyError, TypeError):
+                    pass
+
+            # Path 4: deep-search for any list keyed "items" that contains
+            # dicts with an "id" field (last-resort recursive scan)
+            if not candidates:
+                candidates = self._deep_find_items(data)
+
+            return self._normalise(candidates)
+
+        except Exception as e:
+            log.debug(f"__NEXT_DATA__ parse error: {e}")
+            return []
+
+    def _deep_find_items(self, obj, depth: int = 0) -> List[dict]:
+        """
+        Recursively search a JSON structure for a list of item dicts.
+        Stops at depth 10 to avoid runaway recursion on large blobs.
+        """
+        if depth > 10:
+            return []
+        if isinstance(obj, list):
+            if obj and isinstance(obj[0], dict) and "id" in obj[0]:
+                return obj
+            for v in obj:
+                result = self._deep_find_items(v, depth + 1)
+                if result:
+                    return result
+        elif isinstance(obj, dict):
+            if "items" in obj and isinstance(obj["items"], list):
+                result = self._deep_find_items(obj["items"], depth + 1)
+                if result:
+                    return result
+            for v in obj.values():
+                result = self._deep_find_items(v, depth + 1)
+                if result:
+                    return result
         return []
 
+    def _parse_html_tags(self, html: str) -> List[Dict]:
+        """
+        Fallback: scrape visible listing cards from the HTML.
+        Mercari renders each result as an <li> or <article> containing an <a>
+        whose href is /item/<id>.  We extract what we can from the markup.
+        """
+        try:
+            soup = BeautifulSoup(html, "lxml")
+            out: List[Dict] = []
+
+            # Find all anchor tags pointing to item pages
+            item_links = soup.find_all(
+                "a", href=re.compile(r"/item/m\w+")
+            )
+            seen_ids: set = set()
+
+            for a in item_links:
+                href = a.get("href", "")
+                m = re.search(r"/item/(m\w+)", href)
+                if not m:
+                    continue
+                item_id = m.group(1)
+                if item_id in seen_ids:
+                    continue
+                seen_ids.add(item_id)
+
+                # Name: try alt text on the thumbnail image, then aria-label
+                img = a.find("img")
+                name = ""
+                if img:
+                    name = img.get("alt", "")
+                if not name:
+                    name = a.get("aria-label", "") or a.get_text(strip=True) or "—"
+
+                # Price: look for ¥ pattern in the card text
+                card_text = a.get_text(" ", strip=True)
+                price = 0
+                price_m = re.search(r"[¥￥][\s]?([\d,]+)", card_text)
+                if price_m:
+                    try:
+                        price = int(price_m.group(1).replace(",", ""))
+                    except ValueError:
+                        price = 0
+
+                # Thumbnail
+                thumbnail = ""
+                if img:
+                    thumbnail = img.get("src") or img.get("data-src") or ""
+
+                out.append({
+                    "id":        item_id,
+                    "name":      name or "—",
+                    "price":     price,
+                    "price_str": f"¥{price:,}" if price else "価格非公開",
+                    "url":       f"https://jp.mercari.com/item/{item_id}",
+                    "thumbnail": thumbnail,
+                    "created":   0,
+                    "seller":    "",
+                    "condition": "",
+                })
+
+            return out
+
+        except Exception as e:
+            log.debug(f"HTML tag scrape error: {e}")
+            return []
+
     @staticmethod
-    def _parse(raw: List[Dict]) -> List[Dict]:
+    def _normalise(raw: List[dict]) -> List[Dict]:
+        """
+        Convert raw item dicts (from __NEXT_DATA__ or API shape) into the
+        canonical format used by the rest of the bot.
+        """
         out = []
         for i in raw:
             item_id = str(i.get("id") or "")
             if not item_id:
                 continue
-            price = i.get("price") or i.get("sellingPrice") or 0
+
+            # Price may be nested or flat
+            price = (
+                i.get("price")
+                or i.get("sellingPrice")
+                or (i.get("pricingInfo") or {}).get("price")
+                or 0
+            )
             try:
                 price = int(price)
             except (TypeError, ValueError):
                 price = 0
-            thumbnail = (i.get("thumbnails") or [None])[0] or i.get("thumbnail") or ""
+
+            # Thumbnail may be a list or a single string
+            thumbnails = i.get("thumbnails") or []
+            thumbnail = (
+                thumbnails[0] if thumbnails
+                else i.get("thumbnail") or i.get("thumbnailUrl") or ""
+            )
+
+            # Seller name
+            seller = (
+                (i.get("seller") or {}).get("name")
+                or i.get("sellerName")
+                or ""
+            )
+
+            # Item condition
+            condition = (
+                (i.get("itemCondition") or {}).get("name")
+                or i.get("conditionName")
+                or ""
+            )
+
             out.append({
                 "id":        item_id,
                 "name":      i.get("name") or "—",
@@ -191,10 +419,11 @@ class MercariClient:
                 "price_str": f"¥{price:,}" if price else "価格非公開",
                 "url":       f"https://jp.mercari.com/item/{item_id}",
                 "thumbnail": thumbnail,
-                "created":   i.get("created") or 0,
-                "seller":    (i.get("seller") or {}).get("name") or "",
-                "condition": (i.get("itemCondition") or {}).get("name") or "",
+                "created":   i.get("created") or i.get("createdTime") or 0,
+                "seller":    seller,
+                "condition": condition,
             })
+
         out.sort(key=lambda x: x["created"], reverse=True)
         return out
 
