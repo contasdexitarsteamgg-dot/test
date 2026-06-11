@@ -18,7 +18,7 @@ from aiohttp import ClientTimeout
 from telegram import Bot
 from telegram.error import TelegramError
 
-from config import CONFIG
+from config import CONFIG, PROXY_LIST
 
 log = logging.getLogger("sniper.bot")
 
@@ -110,6 +110,14 @@ class MercariClient:
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
 
+    def _next_proxy(self) -> Optional[str]:
+        """Return the next proxy in round-robin order, or None if list is empty."""
+        if not PROXY_LIST:
+            return None
+        proxy = PROXY_LIST[CONFIG["proxy_index"] % len(PROXY_LIST)]
+        CONFIG["proxy_index"] = (CONFIG["proxy_index"] + 1) % len(PROXY_LIST)
+        return proxy
+
     async def fetch(self, keyword: str, page_size: int) -> List[Dict]:
         payload = {
             "pageSize": page_size,
@@ -129,13 +137,17 @@ class MercariClient:
             "defaultDatasets": ["DATASET_TYPE_MERCARI", "DATASET_TYPE_BEYOND"],
         }
 
-        for attempt in range(1, CONFIG["max_retries"] + 1):
+        # Each attempt uses the next proxy in the rotation so that a dead proxy
+        # is skipped automatically on the following retry.
+        for attempt in range(1, CONFIG["max_retries"] + len(PROXY_LIST) + 1):
+            proxy = self._next_proxy()
+            log.debug(f"Attempt {attempt} via proxy {proxy}")
             try:
                 async with self.session.post(
                     self.URL,
                     json=payload,
                     headers=self.HEADERS,
-                    proxy=CONFIG["proxy"],
+                    proxy=proxy,
                     timeout=ClientTimeout(total=CONFIG["timeout"]),
                 ) as r:
                     if r.status == 200:
@@ -143,13 +155,19 @@ class MercariClient:
                         raw = data.get("items") or data.get("result", {}).get("items", [])
                         return self._parse(raw)
                     elif r.status == 429:
+                        log.warning(f"429 rate-limit via {proxy}, backing off")
                         await asyncio.sleep(CONFIG["retry_delay"] * attempt)
                     else:
                         body = await r.text()
-                        log.warning(f"HTTP {r.status}: {body[:200]}")
+                        log.warning(f"HTTP {r.status} via {proxy}: {body[:200]}")
                         await asyncio.sleep(CONFIG["retry_delay"])
+            except (aiohttp.ClientProxyConnectionError,
+                    aiohttp.ClientConnectorError,
+                    asyncio.TimeoutError) as e:
+                log.warning(f"Proxy {proxy} unreachable (attempt {attempt}): {e}")
+                await asyncio.sleep(CONFIG["retry_delay"])
             except Exception as e:
-                log.warning(f"Request error attempt {attempt}: {e}")
+                log.warning(f"Request error attempt {attempt} via {proxy}: {e}")
                 await asyncio.sleep(CONFIG["retry_delay"])
         return []
 
